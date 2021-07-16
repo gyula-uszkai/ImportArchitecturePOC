@@ -1,42 +1,52 @@
-﻿using System;
+﻿using DC360.Import.Api.Import.Base;
+using DC360.Import.Api.Import.Models;
+using DC360.Import.Api.Import.Sender;
+using Npoi.Mapper;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace DC360.Import.Api.Import
 {
+    /*
+     * NOTE
+     * 
+     * sheet name is important for the reader
+     * 
+     */
+
+    /// <summary>
+    /// Responsible for executing the import flow
+    /// </summary>
     public class ImportProcess
     {
-        // responsibility execute flow
-        public void Start(string type)
+        public void Start(string type, string path = "UserTest.xlsx")
         {
             if (type == "user")
             {
-                StartImport<UserStringModel>();
+                StartImport<UserStringModel, UserTypedModel>(path);
             }
 
             if (type == "not user but a contract")
             {
-                StartImport<UserTypedModel>();
+                StartImport<UserTypedModel, UserTypedModel>(path);
             }
         }
 
-        private void StartImport<T>() where T : class
+        private void StartImport<T, TU>(string path)
+            where T : class
+            where TU : class
         {
-            //get flow
-            var flow = new FlowCreator().CreateFlow<T>(typeof(T));
 
-            //execute flow
-            var lastResult = new List<Trio<T>>();
+            var flow = FlowCreator.CreateFlow<T, TU>(path, typeof(T));
+
+            // execute flow
+            var partialResult = new List<ImportFlowModel<T, TU>>();
             foreach (var item in flow)
             {
-                lastResult = item.Execute(lastResult);
+                partialResult = item.Execute(partialResult);
             }
         }
-    }
-
-    public class Trio<T>
-    {
-        public T Entity { get; set; }
-        public string Whatever { get; set; }
     }
 
 
@@ -56,16 +66,16 @@ namespace DC360.Import.Api.Import
 
     public class FlowCreator
     {
-        public List<IFlowItem<T>> CreateFlow<T>(Type type) where T : class
+        public static List<IFlowItem<T, TU>> CreateFlow<T, TU>(string path, Type type)
+            where T : class
+            where TU : class
         {
-            if (1 < 2)//This is for user
+            if (typeof(UserStringModel) == type)
             {
-                return new List<IFlowItem<T>>
+                return new List<IFlowItem<T, TU>>
                 {
-                    //new UserReader(),
-                    //new UserMapper()
-                    new Test<T>(),
-                    new UserTest() as IFlowItem<T>,
+                    new UserReader(path) as IFlowItem<T, TU>,
+                    new UserTest() as IFlowItem<T, TU>,
                 };
             }
 
@@ -73,92 +83,103 @@ namespace DC360.Import.Api.Import
         }
     }
 
-    public interface IFlowItem<T>
-    {
-        public List<Trio<T>> Execute(List<Trio<T>> input);
-    }
 
-    public interface IReader<T>
-        : IFlowItem<T>
-        where T : new()
-
+    public class DispatcherBase
     {
-    }
+        internal IHubDispatcher Dispatcher { get; init; }
 
-    public abstract class Reader<T> : IReader<T> where T : new()
-    {
-        public Reader(string path)
+        public DispatcherBase(IHubDispatcher dispatcher)
         {
-
+            this.Dispatcher = dispatcher;
         }
 
-        public abstract List<Trio<T>> Execute(List<Trio<T>> input);
-
-        public void SendToSender(List<Trio<T>> input)
+        public void Dispatch<T, TU>(List<ImportFlowModel<T, TU>> input)
+            where T : class
+            where TU : class
         {
-
+            this.Dispatcher.Send(input);
         }
     }
 
-    public class UserReader : Reader<UserStringModel>
+    public abstract class Reader<T, TU> : DispatcherBase, IFlowItem<T, TU>
+         where T : class
+         where TU : class
     {
-        public UserReader(string path) : base(path)
-        {
+        internal string Path { get; init; }
 
+        public Reader(string path, IHubDispatcher dispatcher) : base(dispatcher)
+        {
+            this.Path = path;
         }
 
-        public override List<Trio<UserStringModel>> Execute(List<Trio<UserStringModel>> input)
+        public abstract List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input);
+    }
+
+    public class UserReader : Reader<UserStringModel, UserTypedModel>
+    {
+        public UserReader(string path, IHubDispatcher dispatcher) : base(path, dispatcher)
         {
-            var a = new UserStringModel();
-            a.MyProperty = "ceva";
-            return null;
+        }
+
+        public override List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        {
+            var mapper = new Mapper(this.Path);
+            var rowInfos = mapper.Take<UserStringModel>("sheet1").ToList();
+
+            // we could also create a new list and not use the input
+            input.Clear();
+
+            input.AddRange(rowInfos.Select(rowInfo => new ImportFlowModel<UserStringModel, UserTypedModel>
+            {
+                StringModel = rowInfo.Value,
+                Status = ImportStatus.Processing
+            }));
+
+            this.Dispatch(input);
+
+            return input;
+        }
+    }
+
+    public abstract class Mapper<T, TU> : DispatcherBase, IFlowItem<T, TU>
+         where T : class
+         where TU : class
+    {
+        public Mapper(IHubDispatcher dispatcher) : base(dispatcher)
+        {
+        }
+
+        public abstract List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input);
+    }
+
+    public class UserReader : Reader<UserStringModel, UserTypedModel>
+    {
+        public UserReader(string path, IHubDispatcher dispatcher) : base(path, dispatcher)
+        {
+        }
+
+        public override List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        {
+            var mapper = new Mapper(this.Path);
+            var rowInfos = mapper.Take<UserStringModel>("sheet1").ToList();
+
+            // we could also create a new list and not use the input
+            input.Clear();
+
+            input.AddRange(rowInfos.Select(rowInfo => new ImportFlowModel<UserStringModel, UserTypedModel>
+            {
+                StringModel = rowInfo.Value,
+                Status = ImportStatus.Processing
+            }));
+
+            this.Dispatch(input);
+
+            return input;
         }
     }
 
 
-    public class Test<T> : IFlowItem<T> where T : class
-    {
-        public virtual List<Trio<T>> Execute(List<Trio<T>> input)
-        {
-            return new List<Trio<T>> { new Trio<UserStringModel>() as Trio<T> };
-        }
-    }
 
-    public class UserTest : Test<UserStringModel>
-    {
-        public override List<Trio<UserStringModel>> Execute(List<Trio<UserStringModel>> input)
-        {
-            return new List<Trio<UserStringModel>> { new Trio<UserStringModel>() };
-        }
-    }
-
-    public abstract class Mapper<T> : IFlowItem<T> where T : new()
-    {
-
-        public abstract List<Trio<T>> Execute(List<Trio<T>> input);
-
-        public void SendToSender(List<Trio<T>> input)
-        {
-
-        }
-    }
-
-    public class UserMapper : Mapper<UserStringModel>
-    {
-        public override List<Trio<UserStringModel>> Execute(List<Trio<UserStringModel>> input)
-        {
-            var a = new UserStringModel();
-            a.MyProperty = "ceva";
-            return null;
-        }
-    }
-
-
-    public class UserStringModel
-    {
-        public string MyProperty { get; set; }
-    }
-    public class UserTypedModel { }
 
 
 }

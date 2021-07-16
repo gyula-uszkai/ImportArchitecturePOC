@@ -6,4 +6,16 @@
     <RootNamespace>DC360.Import.Api</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Folder Include="Import\Mappers\" />
+    <Folder Include="Import\Processors\" />
+    <Folder Include="Import\Validators\" />
+    <Folder Include="Import\Readers\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NPOI" Version="2.5.3" />
+    <PackageReference Include="Npoi.Mapper" Version="3.5.1" />
+  </ItemGroup>
+
 </Project>

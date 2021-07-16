@@ -34,25 +34,31 @@ namespace DC360.Import.Api.Import
             this.dispatcher = dispatcher;
         }
 
-        public void Start(string type, string path = "UserTest.xlsx")
+        public void Start(string type, string path)
         {
+            Console.WriteLine("-------new run -----------");
             if (type == "user")
             {
-                StartImport<UserStringModel, UserTypedModel>(path);
+                StartImport<IUserStringModel, UserTypedModel>(type, path);
+            }
+
+            if (type == "userde")
+            {
+                StartImport<IUserStringModel, UserTypedModel>(type, path);
             }
 
             if (type == "not user but a contract")
             {
-                StartImport<UserTypedModel, UserTypedModel>(path);
+                StartImport<UserTypedModel, UserTypedModel>(type, path);
             }
         }
 
-        private void StartImport<T, TU>(string path)
+        private void StartImport<T, TU>(string type, string path)
             where T : class
             where TU : class
         {
 
-            var flow = FlowCreator.CreateFlow<T, TU>(this.dispatcher, path, typeof(T));
+            var flow = FlowCreator.CreateFlow<T, TU>(this.dispatcher, type, path);
 
             // execute flow
             var partialResult = new List<ImportFlowModel<T, TU>>();
@@ -65,19 +71,31 @@ namespace DC360.Import.Api.Import
 
     public class FlowCreator
     {
-        public static List<IFlowItem<T, TU>> CreateFlow<T, TU>(IHubDispatcher dispatcher, string path, Type type)
+        public static List<IFlowItem<T, TU>> CreateFlow<T, TU>(IHubDispatcher dispatcher, string type, string path)
             where T : class
             where TU : class
         {
-            if (typeof(UserStringModel) == type)
+            if ("user" == type)
             {
                 return new List<IFlowItem<T, TU>>
                 {
-                    new Reader<UserStringModel, UserTypedModel>(dispatcher, path) as IFlowItem<T, TU>,
+                    new UserReaderEN(dispatcher, path) as IFlowItem<T, TU>,
                     new UserMapper(dispatcher) as IFlowItem<T, TU>,
                     new UserValidatorController(dispatcher) as IFlowItem<T, TU>,
-                    new ProcessorController<UserStringModel, UserTypedModel>(dispatcher) as IFlowItem<T, TU>,
-                    new EndStep.EndFlowItem<UserStringModel, UserTypedModel>() as IFlowItem<T, TU>
+                    new ProcessorController<IUserStringModel, UserTypedModel>(dispatcher) as IFlowItem<T, TU>,
+                    new EndStep.EndFlowItem<IUserStringModel, UserTypedModel>() as IFlowItem<T, TU>
+                };
+            }
+
+            if ("userde" == type)
+            {
+                return new List<IFlowItem<T, TU>>
+                {
+                    new UserReaderDE(dispatcher, path) as IFlowItem<T, TU>, //only this line is different so we could merge the to (but not now)
+                    new UserMapper(dispatcher) as IFlowItem<T, TU>,
+                    new UserValidatorController(dispatcher) as IFlowItem<T, TU>,
+                    new ProcessorController<IUserStringModel, UserTypedModel>(dispatcher) as IFlowItem<T, TU>,
+                    new EndStep.EndFlowItem<IUserStringModel, UserTypedModel>() as IFlowItem<T, TU>
                 };
             }
 
@@ -119,7 +137,7 @@ namespace DC360.Import.Api.Import
         public virtual List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input)
         {
             var mapper = new Mapper(this.Path);
-            var rowInfos = mapper.Take<T>("sheet1").ToList();
+            var rowInfos = GetRowInfos(mapper);
 
             // we could also create a new list and not use the input
             input.Clear();
@@ -133,6 +151,43 @@ namespace DC360.Import.Api.Import
             this.Dispatch(input);
 
             return input;
+        }
+
+        protected virtual IEnumerable<RowInfo<T>> GetRowInfos(Mapper mapper)
+        {
+            //NOTE that there can be errors here that we are not handling
+            return mapper.Take<T>("sheet1");
+        }
+
+    }
+
+    public class UserReaderDE : Reader<IUserStringModel, UserTypedModel>
+    {
+        public UserReaderDE(IHubDispatcher dispatcher, string path) : base(dispatcher, path)
+        {
+        }
+
+        protected override IEnumerable<RowInfo<IUserStringModel>> GetRowInfos(Mapper mapper)
+        {
+            var rowInfos = mapper.Take<UserDeStringModel>("sheet1");
+
+            //NOTE that there can be errors here that we are not handling
+            return rowInfos.Select(i => new RowInfo<IUserStringModel>(i.RowNumber, i.Value, i.ErrorColumnIndex, i.ErrorMessage));
+        }
+    }
+
+    public class UserReaderEN : Reader<IUserStringModel, UserTypedModel>
+    {
+        public UserReaderEN(IHubDispatcher dispatcher, string path) : base(dispatcher, path)
+        {
+        }
+
+        protected override IEnumerable<RowInfo<IUserStringModel>> GetRowInfos(Mapper mapper)
+        {
+            var rowInfos = mapper.Take<UserStringModel>("sheet1");
+
+            //NOTE that there can be errors here that we are not handling
+            return rowInfos.Select(i => new RowInfo<IUserStringModel>(i.RowNumber, i.Value, i.ErrorColumnIndex, i.ErrorMessage));
         }
     }
 
@@ -153,18 +208,18 @@ namespace DC360.Import.Api.Import
         public abstract List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input);
     }
 
-    public class UserMapper : Mapper<UserStringModel, UserTypedModel>
+    public class UserMapper : Mapper<IUserStringModel, UserTypedModel>
     {
         public UserMapper(IHubDispatcher dispatcher) : base(dispatcher)
         {
         }
 
-        public override List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        public override List<ImportFlowModel<IUserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<IUserStringModel, UserTypedModel>> input)
         {
-            var processedItems = new List<ImportFlowModel<UserStringModel, UserTypedModel>>();
+            var processedItems = new List<ImportFlowModel<IUserStringModel, UserTypedModel>>();
             foreach (var row in input)
             {
-                var record = new ImportFlowModel<UserStringModel, UserTypedModel>
+                var record = new ImportFlowModel<IUserStringModel, UserTypedModel>
                 {
                     StringModel = row.StringModel,
                     TypedModel = new UserTypedModel
@@ -198,13 +253,13 @@ namespace DC360.Import.Api.Import
     /// 
     /// </summary>
     /// <remarks>Note sure if we need a common base for the validators or not</remarks>
-    public class UserValidatorController : DispatcherBase, IFlowItem<UserStringModel, UserTypedModel>
+    public class UserValidatorController : DispatcherBase, IFlowItem<IUserStringModel, UserTypedModel>
     {
         public UserValidatorController(IHubDispatcher dispatcher) : base(dispatcher)
         {
         }
 
-        public List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        public List<ImportFlowModel<IUserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<IUserStringModel, UserTypedModel>> input)
         {
             // TODO the controller should delegate the actual validation to "specialized" validators (see schema)
             foreach (var row in input)

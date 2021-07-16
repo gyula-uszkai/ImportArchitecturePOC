@@ -1,6 +1,6 @@
 ﻿namespace DC360.Import.Api.Import.Models
 {
-    public class UserStringModel
+    public class UserStringModel : IUserStringModel
     {
         public string FirstName { get; set; }
 

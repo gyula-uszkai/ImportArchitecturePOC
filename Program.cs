@@ -12,7 +12,9 @@ namespace ImportArchitecture
             var dispatcher = new HubDispatcher();
             var x = new ImportProcess(dispatcher);
 
-            x.Start("user");
+            x.Start("user", "UserTest.xlsx");
+
+            x.Start("userde", "UserDeTest.xlsx");
         }
     }
 }

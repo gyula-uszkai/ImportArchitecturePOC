@@ -1,4 +1,5 @@
 ﻿using DC360.Import.Api.Import;
+using DC360.Import.Api.Import.Sender;
 using System;
 
 namespace ImportArchitecture
@@ -8,8 +9,8 @@ namespace ImportArchitecture
         static void Main(string[] args)
         {
             Console.WriteLine("Hello World!");
-
-            var x = new ImportProcess();
+            var dispatcher = new HubDispatcher();
+            var x = new ImportProcess(dispatcher);
 
             x.Start("user");
         }

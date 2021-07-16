@@ -12,7 +12,14 @@ namespace DC360.Import.Api.Import
      * NOTE
      * 
      * sheet name is important for the reader
+     * we also need to translate the error messages
      * 
+     * if we want to update the excel at the end, then we should send all records to the end step (not just the one without errors)
+     * 
+     * consider how we would identify the records to update them? consider adding a "nr-crt" or "id" column to identify the records
+     * (this could also be the database id from the export, but if needed to be added manually then it would break the premise that exports can be directly imported)
+     * 
+     * add global exceptions
      */
 
     /// <summary>
@@ -20,6 +27,13 @@ namespace DC360.Import.Api.Import
     /// </summary>
     public class ImportProcess
     {
+        private readonly IHubDispatcher dispatcher;
+
+        public ImportProcess(IHubDispatcher dispatcher)
+        {
+            this.dispatcher = dispatcher;
+        }
+
         public void Start(string type, string path = "UserTest.xlsx")
         {
             if (type == "user")
@@ -38,7 +52,7 @@ namespace DC360.Import.Api.Import
             where TU : class
         {
 
-            var flow = FlowCreator.CreateFlow<T, TU>(path, typeof(T));
+            var flow = FlowCreator.CreateFlow<T, TU>(this.dispatcher, path, typeof(T));
 
             // execute flow
             var partialResult = new List<ImportFlowModel<T, TU>>();
@@ -49,24 +63,9 @@ namespace DC360.Import.Api.Import
         }
     }
 
-
-
-    /*
-     * Flow
-     * 
-     * UserStringModel
-     * UserTypeModel
-     * Error
-     * 
-     * Read - path - UserStringModel
-     * Map - UserStringModel
-     * 
-     * 
-     */
-
     public class FlowCreator
     {
-        public static List<IFlowItem<T, TU>> CreateFlow<T, TU>(string path, Type type)
+        public static List<IFlowItem<T, TU>> CreateFlow<T, TU>(IHubDispatcher dispatcher, string path, Type type)
             where T : class
             where TU : class
         {
@@ -74,10 +73,15 @@ namespace DC360.Import.Api.Import
             {
                 return new List<IFlowItem<T, TU>>
                 {
-                    new UserReader(path) as IFlowItem<T, TU>,
-                    new UserTest() as IFlowItem<T, TU>,
+                    new Reader<UserStringModel, UserTypedModel>(dispatcher, path) as IFlowItem<T, TU>,
+                    new UserMapper(dispatcher) as IFlowItem<T, TU>,
+                    new UserValidatorController(dispatcher) as IFlowItem<T, TU>,
+                    new ProcessorController<UserStringModel, UserTypedModel>(dispatcher) as IFlowItem<T, TU>,
+                    new EndStep.EndFlowItem<UserStringModel, UserTypedModel>() as IFlowItem<T, TU>
                 };
             }
+
+            //TODO add a new flow for contracts
 
             return null;
         }
@@ -101,35 +105,26 @@ namespace DC360.Import.Api.Import
         }
     }
 
-    public abstract class Reader<T, TU> : DispatcherBase, IFlowItem<T, TU>
+    public class Reader<T, TU> : DispatcherBase, IFlowItem<T, TU>
          where T : class
          where TU : class
     {
         internal string Path { get; init; }
 
-        public Reader(string path, IHubDispatcher dispatcher) : base(dispatcher)
+        public Reader(IHubDispatcher dispatcher, string path) : base(dispatcher)
         {
             this.Path = path;
         }
 
-        public abstract List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input);
-    }
-
-    public class UserReader : Reader<UserStringModel, UserTypedModel>
-    {
-        public UserReader(string path, IHubDispatcher dispatcher) : base(path, dispatcher)
-        {
-        }
-
-        public override List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        public virtual List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input)
         {
             var mapper = new Mapper(this.Path);
-            var rowInfos = mapper.Take<UserStringModel>("sheet1").ToList();
+            var rowInfos = mapper.Take<T>("sheet1").ToList();
 
             // we could also create a new list and not use the input
             input.Clear();
 
-            input.AddRange(rowInfos.Select(rowInfo => new ImportFlowModel<UserStringModel, UserTypedModel>
+            input.AddRange(rowInfos.Select(rowInfo => new ImportFlowModel<T, TU>
             {
                 StringModel = rowInfo.Value,
                 Status = ImportStatus.Processing
@@ -141,6 +136,12 @@ namespace DC360.Import.Api.Import
         }
     }
 
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <remarks>Not sure if this abstract mapper base is needed</remarks>
+    /// <typeparam name="T"></typeparam>
+    /// <typeparam name="TU"></typeparam>
     public abstract class Mapper<T, TU> : DispatcherBase, IFlowItem<T, TU>
          where T : class
          where TU : class
@@ -152,34 +153,93 @@ namespace DC360.Import.Api.Import
         public abstract List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input);
     }
 
-    public class UserReader : Reader<UserStringModel, UserTypedModel>
+    public class UserMapper : Mapper<UserStringModel, UserTypedModel>
     {
-        public UserReader(string path, IHubDispatcher dispatcher) : base(path, dispatcher)
+        public UserMapper(IHubDispatcher dispatcher) : base(dispatcher)
         {
         }
 
         public override List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
         {
-            var mapper = new Mapper(this.Path);
-            var rowInfos = mapper.Take<UserStringModel>("sheet1").ToList();
-
-            // we could also create a new list and not use the input
-            input.Clear();
-
-            input.AddRange(rowInfos.Select(rowInfo => new ImportFlowModel<UserStringModel, UserTypedModel>
+            var processedItems = new List<ImportFlowModel<UserStringModel, UserTypedModel>>();
+            foreach (var row in input)
             {
-                StringModel = rowInfo.Value,
-                Status = ImportStatus.Processing
-            }));
+                var record = new ImportFlowModel<UserStringModel, UserTypedModel>
+                {
+                    StringModel = row.StringModel,
+                    TypedModel = new UserTypedModel
+                    {
+                        FirstName = row.StringModel.FirstName
+                    },
+                    Status = ImportStatus.Processing
+                };
+
+                // do conversion
+                if (DateTime.TryParse(row.StringModel.BirthDate, out var bDate))
+                {
+                    record.TypedModel.BirthDate = bDate;
+                }
+                else
+                {
+                    record.Status = ImportStatus.Error;
+                    record.Message += "Some problems with the b-date"; //TODO translate
+                }
+                processedItems.Add(record); // consider using 2 list instead
+            }
+
+            this.Dispatch(processedItems.Where(i => i.Status != ImportStatus.Processing).ToList());
+
+            return processedItems.Where(i => i.Status == ImportStatus.Processing).ToList();
+        }
+    }
+
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <remarks>Note sure if we need a common base for the validators or not</remarks>
+    public class UserValidatorController : DispatcherBase, IFlowItem<UserStringModel, UserTypedModel>
+    {
+        public UserValidatorController(IHubDispatcher dispatcher) : base(dispatcher)
+        {
+        }
+
+        public List<ImportFlowModel<UserStringModel, UserTypedModel>> Execute(List<ImportFlowModel<UserStringModel, UserTypedModel>> input)
+        {
+            // TODO the controller should delegate the actual validation to "specialized" validators (see schema)
+            foreach (var row in input)
+            {
+                // do validation
+                if (row.TypedModel.BirthDate.Month > 3)
+                {
+                    row.Status = ImportStatus.Error;
+                    row.Message += "Person too young"; //TODO translate
+                }
+            }
+
+            this.Dispatch(input.Where(i => i.Status != ImportStatus.Processing).ToList());
+
+            return input.Where(i => i.Status == ImportStatus.Processing).ToList();
+        }
+    }
+
+
+    public class ProcessorController<T, TU> : DispatcherBase, IFlowItem<T, TU>
+         where T : class
+         where TU : class
+    {
+
+        public ProcessorController(IHubDispatcher dispatcher) : base(dispatcher)
+        {
+        }
+
+        public virtual List<ImportFlowModel<T, TU>> Execute(List<ImportFlowModel<T, TU>> input)
+        {
+            //TODO I need a bit more time to implement this
 
             this.Dispatch(input);
 
             return input;
         }
     }
-
-
-
-
-
 }
